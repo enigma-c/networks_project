@@ -1,3 +1,4 @@
+library(tidyverse)
 library(igraph)
 library(tidygraph)
 library(ggraph)
@@ -7,12 +8,11 @@ library(Matrix)
 library(matrixcalc)
 library(JuliaCall) 
 julia_setup()
-julia_library("ControlSystems")
-julia_library("LinearAlgebra")
-julia_library("SparseArrays")
+julia_source("metrics.jl")
 
-MAXIMUM_GRAPH_SIXE <- 40 # Let's not get too ambitious
+MAXIMUM_GRAPH_SIZE <- 40 # Let's not get too ambitious
 
+## UTILITY FUNCTIONs
 split_into_k <- function(n, k) {
     # Split {1,..., n} into k even-ish groups
     # split_into_k(100,3) -> 33, 33, 34
@@ -20,17 +20,6 @@ split_into_k <- function(n, k) {
     remainder <- n - sum(first)
     return(c(first, n - sum(first)))
 }
-
-n <- 100
-k <- 3
-prob.within_group <- 0.25
-prob.between_group <- 0.01
-
-M <- matrix(0, k,k)
-diag(M) <- rep(prob.within_group, k)
-M[upper.tri(M)] <- prob.between_group
-M[lower.tri(M)] <- prob.between_group
-
 
 # SAMPLING FUNCTIONS
 # We are going to sample graphs in the following way:
@@ -41,30 +30,38 @@ M[lower.tri(M)] <- prob.between_group
 # NOTE: There is a paper "Adapting the Stochastic Block Model to Edge-Weighted Networks by Aicher et Al"
 # which discusses estimation on these models, could be useful for later.
 
+
+
 # Generic SBM Sampler
-undirected_asymetric_sbm <- function(n, pref.matrix, block.sizes, sampler) {
+undirected_asymetric_sbm <- function(n, pref.matrix, block.sizes, sampler=rlnorm) {
     # Sampler is a function that generates the value of the weight.
-    A <- sample_sbm(n, pref.matrix, block.sizes, directed=TRUE) %>% as_adj
-    A[which(A==1)] <- sampler(length(which(A==1)))
-    # TODO reweight
-    colSums(A)
-    # TODO add 1 if a certain condition holds
-    # TODO Remove nodes that have no connections
-    return(A)
+    graph <- sample_sbm(n, pref.matrix, block.sizes, directed=TRUE)
+    A <- as_adjacency_matrix(graph)
+    A[which(A==1)] <- sampler(length(which(A==1))) # Sample from distribution for those edges that are connected.
+    A = matrix(A, dim(A)[1], dim(A)[1]) # Convert to non-sparse
+    return(as_tbl_graph(A))
 }
 
-create_sparse <- function(p, n, k) {
+# preferential_attachment TODO
+
+create_ER <- function(n, p) {
     # I think this is equivalent to Erdos-Renyi.
     # p: probability of any edge connecting
     # n: number of nodes
     # k: number of clusters
-    sbm <- matrix(p, k, k)
-    A <- undirected_asymetric_sbm(n, sbm, split_into_k(n, k), sampler=runif)
-    return(A)
+    sbm <- matrix(p, 1, 1)
+    graph <- undirected_asymetric_sbm(n, sbm, split_into_k(n, 1))
+    return(graph)
 }
 
-create_one_big_cluster_graph( ) {
-    ...
+create_one_big_cluster_graph <- function(n, sampler) {
+    cluster_self_prob <- 0.8
+    cluster_out_prob <- 0.3
+    cluster_in_prob <- 0.6
+    non_cluster_between <- 0.01
+    
+    sbm <- matrix( c( cluster_in_prob, cluster_out_prob, cluster_in_prob, non_cluster_between ), 2, 2 )
+    undirected_asymetric_sbm(n, sbm, c(25, 15), sampler)
 }
 
 create_clusters <- function(n, k) {
@@ -75,43 +72,74 @@ create_clusters <- function(n, k) {
     ...
 }
 
-graph_ <- create_sparse(0.05,n,k)
-graph_ %>% ggraph() +
-    geom_edge_link(color="grey") +
-    geom_node_point(size=5, color="firebrick")
-
-
-minimum_driver_nodes <- function(A) {
-    """
-    Only works with symmetric adjacency matries
-    """
-    counter <- table(eigen(A)$values)
-    return(max(t))
-}
-
-# node_level_metrics <- function(A, node_index) {
-#     n <- dim(A)[1]
-#     e <- rep(0, n )
-#     e[node_index] <- 1
-#     Ci <- ctrb(A, e) # Controllability matrix for node
-#     control_centrality <- rankMatrix(Ci)[[1]]
-#     Wi <- Ci %*% t(Ci) # TODO use the network control code to calculate this (doens't work directly)
-#                        # Would just be a matter of copy and pasting code I think
-
-#     node_to_network_centrality <- sum(diag(Wi))
-
-#     network_to_node_centrality <- NA # TODO
-    
-#     return(list(
-#                 control_centrality=control_centrality,
-                
-#                 ))
+# graph_metrics <- function(graph) {
+#     return( list(
+#                 eigenvector_centrality=eigen_centrality(graph)$value,
+#                 meandegree=mean(degree(graph)),
+#                 edges=gsize(graph),
+#                 density=graph.density(graph),
+#                 betweeness=graph.betweeness(graph)
+#      )
+#    ) 
 # }
 
-metrics <- function(graph) {
-    A <- as_adjacency_matrix(graph)
-    # n_D <- minimum_driver_nodes(A) <- would need function to find maximum of GEOMETRIC multiplicity
-
+regularize_graph <- function(graph) {
+    n <- gorder(graph)
+    A <- matrix(as_adjacency_matrix(graph), n, n)
+    A <- julia_call("regularize", A)
+    as_tbl_graph(A)
 }
 
+calc_control_metrics <- function(graph) {
+    control_metrics <- julia_call("get_metrics", A)
+    return(control_metrics)
+}
+
+# graph <- create_sparse(0.50, 10, 2)
+# A <- matrix(as_adjacency_matrix(graph), 10, 10)
+# A_r <- julia_call("regularize", A)
+
+
+simulate <- function() {
+    N <- MAXIMUM_GRAPH_SIZE
+
+    graph_simulators <- list( 
+                             function(n) create_ER(n, 0.1) ,
+                             function(n) create_ER(n, 0.2)
+                             )
+
+    graph_simulators_names <- c(
+                                "ER_0.1",
+                                "ER_0.2"
+                               )
+    param_grid <- list()
+
+    i <- 0
+    for (j in 1:length(graph_simulators)) {
+        graph <- graph_simulators[[j]](N) 
+        graph <- regularize_graph(graph)
+        control_metrics <- calc_control_metrics(graph)
+        graph_index <- i
+        result <- tibble(
+            graph_index=i,
+            graph_simulator=graph_simulators_names[j], # TODO add simulator name
+            node_index=1:n,
+            eigenvector_centrality=eigen_centrality(graph)$value,
+            meandegree=mean(degree(graph)),
+            edges=gsize(graph),
+            density=graph.density(graph),
+            betweeness=betweenness(graph),
+            node_to_network=control_metrics[[1]], # tr(W)
+            network_to_node=control_metrics[[2]] # tr(M)
+        )
+        if (i == 0) {
+            result_df <- result
+        }
+        else {
+            result_df <- bind_rows(result_df, result)
+        }
+        i <- i + 1
+    }
+    return results
+}
 

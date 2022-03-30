@@ -6,7 +6,18 @@ using StatsBase
 using InvertedIndices
 
 function regularize(A)
-    # Tested
+    # Not Tested
+
+    # Prune dead nodes
+    # i.e those node that have nod edges to and from.them.
+    to_delete = []
+    for i in size(A,1)
+        if sum(A[i,:]) == 0 == sum(A[:,i])
+            push!(to_delete, i)
+        end
+    end
+
+    A = A[ Not(to_delete) , Not(to_delete) ]
 
     # If Σ_{j != i} w_ij = w_kj, set w_kj to 0
     for i in size(A,1)
@@ -19,23 +30,12 @@ function regularize(A)
         end
     end
 
-    # A_ij -> A_ij / Σ_j A_ij
-    colSums = sum(A, dims=1) # dims=1 sums across columns
-    for (i, x) in enumerate(colSums)
+    # A_ij -> A_ij / Σ_i A_ij
+    rowSums = sum(A, dims=2) # dims=1 sums across columns
+    for (i, x) in enumerate(rowSums)
         if x == 0 continue end
         A[i,:] = A[i,:] ./ x
     end
-
-    # Prune dead nodes
-    # i.e those node that have nod edges to and from.them.
-    to_delete = []
-    for i in size(A,1); for i in size(A,2)
-        if sum(A[i,:]) == 0 == sum(A[:,i])
-            push!(to_delete, i)
-        end
-    end end
-
-    A = A[ Not(to_delete) , Not(to_delete) ]
 
     return A
 end
@@ -72,24 +72,18 @@ function get_node_metrics(A, node_index)
 end
 
 function get_metrics(A)
-    output = Vector{typeof(
-                           (tW = 1., tM = 2.)
-                          )}(undef, size(A,1))
+    Ws = Vector{Float64}(undef, size(A,1))
+    Ms = Vector{Float64}(undef, size(A,1))
     for i=1:(size(A,1))
-        output[i] = get_node_metrics(A, i)
+        tW, tM = get_node_metrics(A, i)
+        Ws[i] = tW
+        Ms[i] = tM
     end
-    return output
-end
-
-
-function do_julia_work(A)
-    A = regularize(A)
-    node_level_metrics = get_metrics(A)
-    return (A = A, node_level_metrics = node_level_metrics)
+    return Ws, Ms
 end
 
 n=8
-k=2
+k=22
 A = erdos_renyi(n, k) |> adjacency_matrix
 A = convert(Matrix{Float64}, A)
 A = regularize(A)
@@ -99,3 +93,5 @@ B = begin
     x[2] = 1
     reshape(x, (size(A,1),1) )
     end
+
+
