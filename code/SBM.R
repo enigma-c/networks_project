@@ -10,7 +10,7 @@ library(JuliaCall)
 julia_setup()
 julia_source("metrics.jl")
 
-MAXIMUM_GRAPH_SIZE <- 40 # Let's not get too ambitious
+MAXIMUM_GRAPH_SIZE <- 50 # Let's not get too ambitious
 
 ## UTILITY FUNCTIONs
 split_into_k <- function(n, k) {
@@ -83,6 +83,8 @@ create_clusters <- function(n, k) {
 #    ) 
 # }
 
+sample_pa()
+
 regularize_graph <- function(graph) {
     n <- gorder(graph)
     A <- matrix(as_adjacency_matrix(graph), n, n)
@@ -91,6 +93,7 @@ regularize_graph <- function(graph) {
 }
 
 calc_control_metrics <- function(graph) {
+    A <- matrix(as_adjacency_matrix(graph), gorder(graph), gorder(graph))
     control_metrics <- julia_call("get_metrics", A)
     return(control_metrics)
 }
@@ -101,45 +104,49 @@ calc_control_metrics <- function(graph) {
 
 
 simulate <- function() {
+    result <- NA
+    result_df <- NA
     N <- MAXIMUM_GRAPH_SIZE
 
+    # ATTENTION: every function must take two arguments
     graph_simulators <- list( 
-                             function(n) create_ER(n, 0.1) ,
-                             function(n) create_ER(n, 0.2)
+                             "ER" = function(n, p) create_ER(n, p)
+                             # "1C" = function(n, sampler) create_one_big_cluster_graph()
                              )
 
-    graph_simulators_names <- c(
-                                "ER_0.1",
-                                "ER_0.2"
-                               )
-    param_grid <- list()
+    param_grid <- list(
+                       "ER"=seq(0, 1, 0.05)[-1]
+                     )
 
-    i <- 0
-    for (j in 1:length(graph_simulators)) {
-        graph <- graph_simulators[[j]](N) 
-        graph <- regularize_graph(graph)
-        control_metrics <- calc_control_metrics(graph)
-        graph_index <- i
-        result <- tibble(
-            graph_index=i,
-            graph_simulator=graph_simulators_names[j], # TODO add simulator name
-            node_index=1:n,
-            eigenvector_centrality=eigen_centrality(graph)$value,
-            meandegree=mean(degree(graph)),
-            edges=gsize(graph),
-            density=graph.density(graph),
-            betweeness=betweenness(graph),
-            node_to_network=control_metrics[[1]], # tr(W)
-            network_to_node=control_metrics[[2]] # tr(M)
-        )
-        if (i == 0) {
-            result_df <- result
+    i <- 1
+    for (j in names(graph_simulators)) {
+        for (p in param_grid[[j]]) {
+            graph <- graph_simulators[[j]](N, p) 
+            graph <- regularize_graph(graph)
+            control_metrics <- calc_control_metrics(graph)
+            graph_index <- i
+            result <- tibble(
+                graph_index=i,
+                graph_simulator=paste(j, p, sep="_"),
+                node_index=1:gorder(graph),
+                eigenvector_centrality=eigen_centrality(graph)$value,
+                meandegree=mean(degree(graph)),
+                edges=gsize(graph),
+                density=graph.density(graph),
+                betweeness=betweenness(graph),
+                node_to_network=control_metrics[[1]], # tr(W)
+                network_to_node=control_metrics[[2]] # tr(M)
+            )
+            print(j)
+            if (i == 1) {
+                result_df <- result
+            }
+            else {
+                result_df <- bind_rows(result_df, result)
+            }
+            i <- i + 1
         }
-        else {
-            result_df <- bind_rows(result_df, result)
-        }
-        i <- i + 1
     }
-    return results
+    return(result_df)
 }
 
